@@ -207,7 +207,6 @@ class Puzzle:
     def blockwise(self):
         for block_i in range(0, 3):
             for block_j in range(0, 3):
-                unknown = 0
                 unknown_by_row = [0, 0, 0]
                 unknown_by_col = [0, 0, 0]
                 for ii in range(0, 3):
@@ -215,7 +214,6 @@ class Puzzle:
                         i = 3 * block_i + ii
                         j = 3 * block_j + jj
                         if count_bits(self.bitmap[i, j]) != 1:
-                            unknown |= self.bitmap[i, j]
                             unknown_by_row[ii] |= self.bitmap[i, j]
                             unknown_by_col[jj] |= self.bitmap[i, j]
                 for ii in range(0, 3):
@@ -256,60 +254,28 @@ class Puzzle:
         return False
 
     def union_2(self):
-        # Row-based
-        for i in range(0, 9):
-            for j1 in range(0, 8):
-                if count_bits(self.bitmap[i, j1]) == 1: continue
-                for j2 in range(j1 + 1, 9):
-                    if count_bits(self.bitmap[i, j2]) == 1: continue
-                    union_bits = self.bitmap[i, j1] | self.bitmap[i, j2]
-                    if count_bits(union_bits) == 2:
-                        for j in range(0, 9):
-                            if j == j1: continue
-                            if j == j2: continue
-                            if count_bits(self.bitmap[i, j]) == 1: continue
-                            self.bitmap[i, j] &= ~union_bits
-                            if count_bits(self.bitmap[i, j]) == 1:
-                                self.propagate_updates([(i, j)])
-
-        # Col-based
-        for j in range(0, 9):
-            for i1 in range(0, 8):
-                if count_bits(self.bitmap[i1, j]) == 1: continue
-                for i2 in range(i1 + 1, 9):
-                    if count_bits(self.bitmap[i2, j]) == 1: continue
-
-                    union_bits = self.bitmap[i1, j] | self.bitmap[i2, j]
-                    if count_bits(union_bits) == 2:
-                        for i in range(0, 9):
-                            if i == i1: continue
-                            if i == i2: continue
-                            if count_bits(self.bitmap[i, j]) == 1: continue
-                            self.bitmap[i, j] &= ~union_bits
-                            if count_bits(self.bitmap[i, j]) == 1:
-                                self.propagate_updates([(i, j)])
-
-
-        # Block-based
-        for block in range(0, 9):
-            block_i = block // 3
-            block_j = block % 3
-            for k1 in range(0, 8):
-                i1 = 3 * block_i + k1 // 3
-                j1 = 3 * block_j + k1 % 3
+        def choose2(items):
+            for k1 in range(0, len(items) - 1):
+                i1, j1 = items[k1]
                 if count_bits(self.bitmap[i1, j1]) == 1: continue
-                for k2 in range(k1 + 1, 9):
-                    i2 = 3 * block_i + k2 // 3
-                    j2 = 3 * block_j + k2 % 3
+                for k2 in range(k1, len(items)):
+                    i2, j2 = items[k2]
                     if count_bits(self.bitmap[i2, j2]) == 1: continue
-                    union_bits = self.bitmap[i1, j1] | self.bitmap[i2, j2]
+                    yield k1, k2
+
+        for i in range(0, 9):
+            its = [row_iterator(i, 0),
+                   col_iterator(0, i),
+                   block_iterator(3 * (i // 3), 3 * (i % 3))]
+            for it in its:
+                items = [ij for ij in it]
+                for k1, k2 in choose2(items):
+                    ij1, ij2 = items[k1], items[k2]
+                    union_bits = self.bitmap[ij1[0], ij1[1]] | self.bitmap[ij2[0], ij2[1]]
                     if count_bits(union_bits) == 2:
-                        if verbose: print('block based!')
                         for k in range(0, 9):
-                            i = 3 * block_i + k // 3
-                            j = 3 * block_j + k % 3
-                            if (i == i1) and (j == j1): continue
-                            if (i == i2) and (j == j2): continue
+                            if (k == k1) or (k == k2): continue
+                            i, j = items[k1]
                             if count_bits(self.bitmap[i, j]) == 1: continue
                             self.bitmap[i, j] &= ~union_bits
                             if count_bits(self.bitmap[i, j]) == 1:
@@ -361,73 +327,6 @@ class Puzzle:
                     self.bitmap[i, j] = sel
                     self.propagate_updates([(i, j)])
                     break
-
-    def solve_linear(self):
-        import numpy.linalg
-        from scipy import optimize
-
-        v = []
-        m = {}
-        for i in range(0, 9):
-            for j in range(0, 9):
-                if count_bits(self.bitmap[i, j]) != 1:
-                    m[(i,j)] = len(v)
-                    l = -1
-                    x = 0
-                    options = []
-                    for k in range(0, 9):
-                        if self.bitmap[i, j] & (1 << k):
-                            if l < 0:
-                                l = k + 1
-                            x = k + 1
-                            options.append(k + 1)
-                    v.append((l, x, options))
-        A = np.zeros((27, len(v)))
-        b = np.ones((27)) * 45
-        row = 0
-        for i in range(0, 9):
-            for j in range(0, 9):
-                if count_bits(self.bitmap[i, j]) == 1:
-                    b[row + i] -= bit_to_integer(self.bitmap[i, j])
-                else:
-                    A[row + i, m[(i, j)]] = 1
-        row = 9
-        for j in range(0, 9):
-            for i in range(0, 9):
-                if count_bits(self.bitmap[i, j]) == 1:
-                    b[row + j] -= bit_to_integer(self.bitmap[i, j])
-                else:
-                    A[row + j, m[(i, j)]] = 1
-        row = 18
-        for block in range(0, 9):
-            block_i = block // 3
-            block_j = block % 3
-            for k in range(0, 9):
-                i = 3 * block_i + k // 3
-                j = 3 * block_j + k % 3
-                if count_bits(self.bitmap[i, j]) == 1:
-                    b[row + block] -= bit_to_integer(self.bitmap[i, j])
-                else:
-                    A[row + block, m[(i, j)]] = 1
-
-        bounds=([l[0] for l in v],
-                [l[1] for l in v])
-        res = optimize.lsq_linear(A, b, bounds=bounds)
-        print('linear:')
-        print('rank:', np.linalg.matrix_rank(A))
-        print(A)
-        print(bounds)
-        x = res.x
-        print(res)
-        x_int = np.zeros((len(v)))
-        for i in range(len(v)):
-            print(x[i], v[i][2])
-            diff = np.power(x[i] - np.array(v[i][2]), 2)
-            print(diff)
-            x_int[i] = v[i][2][np.argmin(diff)]
-        print(x, x_int)
-
-        print(np.dot(A, x_int) - b)
 
 
     def search(self, max_level):
