@@ -84,6 +84,15 @@ def all_iterators(i, j):
                              col_iterator(i, j),
                              block_iterator(i, j)])
 
+def choose_n(items, n, start=0):
+    for k in range(start, len(items) - (n - 1)):
+        if n > 1:
+            for other in choose_n(items, n - 1, k + 1):
+                yield tuple([k] + list(other)) # This is a bit inefficient
+        else:
+            yield (k, )
+
+
 class Puzzle:
     def __init__(self, state):
         self.initial_state = state
@@ -253,65 +262,32 @@ class Puzzle:
 
         return False
 
-    def union_2(self):
-        def choose2(items):
-            for k1 in range(0, len(items) - 1):
-                i1, j1 = items[k1]
-                if count_bits(self.bitmap[i1, j1]) == 1: continue
-                for k2 in range(k1, len(items)):
-                    i2, j2 = items[k2]
-                    if count_bits(self.bitmap[i2, j2]) == 1: continue
-                    yield k1, k2
-
+    def union_n(self, n):
         for i in range(0, 9):
             its = [row_iterator(i, 0),
                    col_iterator(0, i),
                    block_iterator(3 * (i // 3), 3 * (i % 3))]
             for it in its:
                 items = [ij for ij in it]
-                for k1, k2 in choose2(items):
-                    ij1, ij2 = items[k1], items[k2]
-                    union_bits = self.bitmap[ij1[0], ij1[1]] | self.bitmap[ij2[0], ij2[1]]
-                    if count_bits(union_bits) == 2:
+                for ks in choose_n(items, n):
+                    union_bits = 0
+                    for k in ks:
+                        union_bits |= self.bitmap[items[k][0], items[k][1]]
+                    ks = frozenset(ks)
+                    if count_bits(union_bits) == n:
                         for k in range(0, 9):
-                            if (k == k1) or (k == k2): continue
-                            i, j = items[k1]
+                            if k in ks: continue
+                            i, j = items[k]
                             if count_bits(self.bitmap[i, j]) == 1: continue
                             self.bitmap[i, j] &= ~union_bits
                             if count_bits(self.bitmap[i, j]) == 1:
                                 self.propagate_updates([(i, j)])
 
-    def union_3(self):
-        # Block-based
-        for block in range(0, 9):
-            block_i = block // 3
-            block_j = block % 3
-            for k1 in range(0, 7):
-                i1 = 3 * block_i + k1 // 3
-                j1 = 3 * block_j + k1 % 3
-                if count_bits(self.bitmap[i1, j1]) == 1: continue
-                for k2 in range(k1 + 1, 8):
-                    i2 = 3 * block_i + k2 // 3
-                    j2 = 3 * block_j + k2 % 3
-                    if count_bits(self.bitmap[i2, j2]) == 1: continue
-                    for k3 in range(k2 + 1, 9):
-                        i3 = 3 * block_i + k3 // 3
-                        j3 = 3 * block_j + k3 % 3
-                        if count_bits(self.bitmap[i3, j3]) == 1: continue
-                        union_bits = self.bitmap[i1, j1] | self.bitmap[i2, j2] | self.bitmap[i3, j3]
-                        if count_bits(union_bits) == 3:
-                            print('union based-3: %s' % bit_to_options(union_bits))
-                            for k in range(0, 9):
-                                i = 3 * block_i + k // 3
-                                j = 3 * block_j + k % 3
-                                if (i == i1) and (j == j1): continue
-                                if (i == i2) and (j == j2): continue
-                                if (i == i3) and (j == j3): continue
+    def union_2(self):
+        return self.union_n(2)
 
-                                if count_bits(self.bitmap[i, j]) == 1: continue
-                                self.bitmap[i, j] &= ~union_bits
-                                if count_bits(self.bitmap[i, j]) == 1:
-                                    self.propagate_updates([(i, j)])
+    def union_3(self):
+        return self.union_n(3)
 
     def only_place(self):
         for i, j in grid_iterator():
@@ -347,8 +323,8 @@ class Puzzle:
                             if self.progress() == 0 and self.check_state():
                                 print('in search, solved: %d' % num_attempts)
                                 return
-                            elif (self.progress() > 0 and self.check_state()):
-                                print(self.solve_linear())
+#                            elif (self.progress() > 0 and self.check_state()):
+#                                print(self.solve_linear())
 
 
     def solve(self, max_level):
