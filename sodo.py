@@ -42,18 +42,16 @@ def make_bitmap(state):
     return bitmap
 
 def count_bits(bitmask):
-    if bit_lookup:
-        return bit_lookup[bitmask]
-    count = 0
-    for i in range(0, 9):
-        if (bitmask & (1 << i)):
-            count += 1
-    return count
-
-def make_table():
-    return [count_bits(i) for i in range(0, 512)]
-
-bit_lookup = make_table()
+    def _count_bits(mask):
+        count = 0
+        for i in range(0, 9):
+            if (mask & (1 << i)):
+                count += 1
+        return count
+    global bit_lookup
+    if not bit_lookup:
+        bit_lookup = [_count_bits(i) for i in range(0, 512)]
+    return bit_lookup[bitmask]
 
 
 def bit_to_integer(bitmask):
@@ -119,7 +117,6 @@ class Puzzle:
         self.bitmap[i, j] = bits
 
     def check_state(self, verbose=False):
-        invalid = False
         messages = []
         for i in range(0, 9):
             its = {"row": row_iterator(i, 0),
@@ -143,6 +140,14 @@ class Puzzle:
                     found.append((i, j))
         self.propagate_updates(found)
 
+    def _apply_mask(self, i, j, mask):
+        if count_bits(self.bitmap[i, j]) != 1:
+            self.bitmap[i, j] &= mask
+            if count_bits(self.bitmap[i, j]) == 1:
+                self.propagate_updates([(i, j)])
+            return True
+        return False
+
     def propagate_updates(self, found):
         while len(found) > 0:
             new_found = []
@@ -152,10 +157,8 @@ class Puzzle:
                 bits = self.bitmap[entry[0], entry[1]]
                 for ij in all_iterators(entry[0], entry[1]):
                     if ij[0] == entry[0] and ij[1] == entry[1]: continue
-                    if count_bits(self.bitmap[ij[0], ij[1]]) == 1: continue
-                    self.bitmap[ij[0], ij[1]] &= ~bits
-                    if count_bits(self.bitmap[ij[0], ij[1]]) == 1:
-                        new_found.append((ij[0], ij[1]))
+                    self._apply_mask(ij[0], ij[1], ~bits)
+
             if verbose:
                 print('found/new_found %d %d\n' % (len(found), len(new_found)))
             found = new_found
@@ -184,10 +187,8 @@ class Puzzle:
                           k if index == 1 else 3 * b1]
                     for ij2 in block_iterator(ij[0], ij[1]):
                         if ij2[index] == ij[index]: continue
-                        if count_bits(self.bitmap[ij2[0], ij2[1]]) != 1:
-                            self.bitmap[ij2[0], ij2[1]] &= ~bits_to_clear
-                            if count_bits(self.bitmap[ij2[0], ij2[1]]) == 1:
-                                self.propagate_updates([(ij2[0], ij2[1])])
+                        self._apply_mask(ij2[0], ij2[1], ~bits_to_clear)
+
 
     def blockwise_rows(self):
         return self.blockwise_line(0, lambda x: row_iterator(x, 0))
@@ -226,10 +227,8 @@ class Puzzle:
                             block = [block_i, block_j]
                             for ij in it(3 * block[0] + k1, 3 * block[1] + k1):
                                 if ij[1 - index] // 3 == block[1 - index]: continue
-                                if count_bits(self.bitmap[ij[0], ij[1]]) != 1:
-                                    self.bitmap[ij[0], ij[1]] &= ~bits_to_clear
-                                    if count_bits(self.bitmap[ij[0], ij[1]]) == 1:
-                                        self.propagate_updates([ij])
+                                self._apply_mask(ij[0], ij[1], ~bits_to_clear)
+
         return False
 
     def union_n(self, n):
@@ -247,11 +246,7 @@ class Puzzle:
                     if count_bits(union_bits) == n:
                         for k in range(0, 9):
                             if k in ks: continue
-                            i, j = items[k]
-                            if count_bits(self.bitmap[i, j]) == 1: continue
-                            self.bitmap[i, j] &= ~union_bits
-                            if count_bits(self.bitmap[i, j]) == 1:
-                                self.propagate_updates([(i, j)])
+                            self._apply_mask(items[k][0], items[k][1], ~union_bits)
 
     def only_place(self):
         for i, j in grid_iterator():
@@ -273,22 +268,21 @@ class Puzzle:
         print('searcing ---------------------------------------')
         bitmap_copy = self.bitmap.copy()
         num_attempts = 0
-        for i in range(0, 9):
-            for j in range(0, 9):
-                if count_bits(bitmap_copy[i, j]) == 2:
-                    print('in search, num == 2 (%d, %d)\n' % ( i, j))
-                    num_attempts += 1
-                    for k in range(0, 9):
-                        if bitmap_copy[i, j] & (1 << k):
-                            self.bitmap = bitmap_copy.copy()
-                            self.bitmap[i, j] = (1 << k)
-                            self.solve(max_level)
-                            print('in search: %d\n' % self.progress())
-                            if self.progress() == 0 and self.check_state():
-                                print('in search, solved: %d' % num_attempts)
-                                return
-                            elif False and (self.progress() > 0 and self.check_state()):
-                                print(solve_linear(self))
+        for i, j in grid_iterator():
+            if count_bits(bitmap_copy[i, j]) == 2:
+                print('in search, num == 2 (%d, %d)\n' % ( i, j))
+                num_attempts += 1
+                for k in range(0, 9):
+                    if bitmap_copy[i, j] & (1 << k):
+                        self.bitmap = bitmap_copy.copy()
+                        self.bitmap[i, j] = (1 << k)
+                        self.solve(max_level)
+                        print('in search: %d\n' % self.progress())
+                        if self.progress() == 0 and self.check_state():
+                            print('in search, solved: %d' % num_attempts)
+                            return
+                        elif False and (self.progress() > 0 and self.check_state()):
+                            print(solve_linear(self))
 
 
     def solve(self, max_level):
@@ -303,7 +297,7 @@ class Puzzle:
             ("blockwise_cols", 2, lambda x: x.blockwise_cols()),
             ("union_2", 3, lambda x: x.union_n(2)),
             ("union_3", 4, lambda x: x.union_n(3)),
-            ("union_4", 5, lambda x: x.union_n(4)), # Never found a puzzle that needed this
+            # ("union_4", 5, lambda x: x.union_n(4)), # Never found a puzzle that needed this
         ]
         while self.progress() != last_progress:
             last_progress = self.progress()
@@ -334,7 +328,7 @@ if __name__ == "__main__":
     parser.add_argument('--max_level', type=int, default=5,
                         help='Max level (complexity of moves)')
     parser.add_argument('--puzzle', help='Filename of the puzzle')
-    parser.add_argument('--allow_search', type=int, help='Allow performing search', default=0)
+    parser.add_argument('--allow_search', type=int, help='Allow performing search', default=1)
     args = parser.parse_args(sys.argv[1:])
     puzzle = read_puzzle(args.puzzle)
 
