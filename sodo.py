@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 import numpy as np
@@ -6,14 +7,38 @@ import pickle
 verbose = False
 bit_lookup = None
 
-def make_bitmap(state):
-    bitmap = np.zeros((9, 9), 'int32')
+def row_iterator(i, j):
+    for jj in range(0, 9):
+        yield i, jj
+
+def col_iterator(i, j):
+    for ii in range(0, 9):
+        yield ii, j
+
+def grid_iterator():
     for i in range(0, 9):
         for j in range(0, 9):
-            if state[i][j] == 0:
-                bitmap[i, j] = 0
-            else:
-                bitmap[i, j] = 1 << (state[i][j] - 1)
+            yield i, j
+
+def block_iterator(i, j):
+    block_i, block_j = i // 3, j // 3
+    for k in range(0, 9):
+        yield 3 * block_i + k // 3, 3 * block_j + k % 3
+
+def concat_iterators(its):
+    for it in its:
+        for i, j in it:
+            yield i, j
+
+def all_iterators(i, j):
+    return concat_iterators([row_iterator(i, j),
+                             col_iterator(i, j),
+                             block_iterator(i, j)])
+
+def make_bitmap(state):
+    bitmap = np.zeros((9, 9), 'int32')
+    for i, j in grid_iterator():
+        bitmap[i, j] = 0 if state[i][j] == 0 else 1 << (state[i][j] - 1)
     return bitmap
 
 def count_bits(bitmask):
@@ -56,34 +81,6 @@ def bit_to_options(bitmask):
             s += '-'
     return s
 
-def row_iterator(i, j):
-    for jj in range(0, 9):
-        yield i, jj
-
-def col_iterator(i, j):
-    for ii in range(0, 9):
-        yield ii, j
-
-def grid_iterator():
-    for i in range(0, 9):
-        for j in range(0, 9):
-            yield i, j
-
-def block_iterator(i, j):
-    block_i, block_j = i // 3, j // 3
-    for k in range(0, 9):
-        yield 3 * block_i + k // 3, 3 * block_j + k % 3
-
-def concat_iterators(its):
-    for it in its:
-        for i, j in it:
-            yield i, j
-
-def all_iterators(i, j):
-    return concat_iterators([row_iterator(i, j),
-                             col_iterator(i, j),
-                             block_iterator(i, j)])
-
 def choose_n(items, n, start=0):
     for k in range(start, len(items) - (n - 1)):
         if n > 1:
@@ -99,12 +96,12 @@ class Puzzle:
         self.bitmap = make_bitmap(state)
 
     def __str__(self):
-        puzzle = self.initial_state
-        s = '\n'.join([' '.join([bit_to_readable(item) for item in row]) for row in self.bitmap])
-        puzzle = self.bitmap
-        hex_str = '\n'.join([' '.join(['%08x' % item for item in row]) for row in puzzle])
-        options_str = '\n'.join([' '.join([bit_to_options(item) for item in row]) for row in self.bitmap])
-        return 'num_unknown = %d, valid = %d, progress = %d\n' % (self.num_unknown(), self.check_state(), self.progress()) + s + '\n' + options_str
+        s = '\n'.join([' '.join([bit_to_readable(item) for item in row])
+                       for row in self.bitmap])
+        options_str = '\n'.join(
+            [' '.join([bit_to_options(item) for item in row]) for row in self.bitmap])
+        return 'num_unknown = %d, valid = %d, progress = %d\n' % (
+            self.num_unknown(), self.check_state(), self.progress()) + s + '\n' + options_str
 
     def num_unknown(self):
         return sum([count_bits(self.bitmap[i, j]) != 1
@@ -163,103 +160,76 @@ class Puzzle:
                 print('found/new_found %d %d\n' % (len(found), len(new_found)))
             found = new_found
 
-    def blockwise_rows(self):
-        for i in range(0, 9):
+    def blockwise_line(self, index, it_gen):
+        """
+        For each line (either row or column), if all the possible positions
+        for a given value lie within a single block, then those values can
+        not appear at any other place within the block (otherwise we wouldn't
+        be able to put them on the given line).
+        """
+        for k in range(0, 9):
             unknown_by_block = [0, 0, 0]
-            for j in range(0, 9):
+            for ij in it_gen(k):
+                i, j = ij[0], ij[1]
                 if count_bits(self.bitmap[i, j]) != 1:
-                    unknown_by_block[j // 3] |= self.bitmap[i, j]
+                    unknown_by_block[ij[1 - index] // 3] |= self.bitmap[i, j]
 
-            for block_j in range(0, 3):
-                other_blocks = 0
-                for kk in range(0, 3):
-                    if block_j == kk: continue
-                    other_blocks |= unknown_by_block[kk]
-                bits_to_clear = (other_blocks ^ unknown_by_block[block_j]) & unknown_by_block[block_j]
+            for b1 in range(0, 3):
+                other_blocks = unknown_by_block[(b1 + 1) % 3] |  unknown_by_block[(b1 + 2) % 3]
+                bits_to_clear = (other_blocks ^ unknown_by_block[b1]) & unknown_by_block[b1]
                 if bits_to_clear:
                     if verbose:
                         print('Blockwise rows')
-                    for ii in range(0, 3):
-                        I = 3 * (i // 3) + ii
-                        if i == I: continue
-                        for jj in range(0, 3):
-                            J = 3 * block_j + jj
-                            if count_bits(self.bitmap[I, J]) != 1:
-                                self.bitmap[I, J] &= ~bits_to_clear
-                                if count_bits(self.bitmap[I, J]) == 1:
-                                    self.propagate_updates([(I, J)])
-    def blockwise_cols(self):
-        for j in range(0, 9):
-            unknown_by_block = [0, 0, 0]
-            for i in range(0, 9):
-                if count_bits(self.bitmap[i, j]) != 1:
-                    unknown_by_block[i // 3] |= self.bitmap[i, j]
+                    ij = [k if index == 0 else 3 * b1,
+                          k if index == 1 else 3 * b1]
+                    for ij2 in block_iterator(ij[0], ij[1]):
+                        if ij2[index] == ij[index]: continue
+                        if count_bits(self.bitmap[ij2[0], ij2[1]]) != 1:
+                            self.bitmap[ij2[0], ij2[1]] &= ~bits_to_clear
+                            if count_bits(self.bitmap[ij2[0], ij2[1]]) == 1:
+                                self.propagate_updates([(ij2[0], ij2[1])])
 
-            for block_i in range(0, 3):
-                other_blocks = 0
-                for kk in range(0, 3):
-                    if block_i == kk: continue
-                    other_blocks |= unknown_by_block[kk]
-                bits_to_clear = (other_blocks ^ unknown_by_block[block_i]) & unknown_by_block[block_i]
-                if bits_to_clear:
-                    if verbose: print('Blockwise cols')
-                    for jj in range(0, 3):
-                        J = 3 * (j // 3) + jj
-                        if j == J: continue
-                        for ii in range(0, 3):
-                            I = 3 * block_i + ii
-                            if count_bits(self.bitmap[I, J]) != 1:
-                                self.bitmap[I, J] &= ~bits_to_clear
-                                if count_bits(self.bitmap[I, J]) == 1:
-                                    self.propagate_updates([(I, J)])
+    def blockwise_rows(self):
+        return self.blockwise_line(0, lambda x: row_iterator(x, 0))
+
+    def blockwise_cols(self):
+        return self.blockwise_line(1, lambda x: col_iterator(0, x))
 
     def blockwise(self):
+        """
+        For each block, if all the possible locations for a given
+        value lie on one line, then we cannot put that value
+        on any that line within any other block.
+        """
         for block_i in range(0, 3):
             for block_j in range(0, 3):
                 unknown_by_row = [0, 0, 0]
                 unknown_by_col = [0, 0, 0]
-                for ii in range(0, 3):
-                    for jj in range(0, 3):
-                        i = 3 * block_i + ii
-                        j = 3 * block_j + jj
-                        if count_bits(self.bitmap[i, j]) != 1:
-                            unknown_by_row[ii] |= self.bitmap[i, j]
-                            unknown_by_col[jj] |= self.bitmap[i, j]
-                for ii in range(0, 3):
-                    other_rows = 0
-                    for k in range(0, 3):
-                        if k == ii: continue
-                        other_rows |= unknown_by_row[k]
-                    bits_to_clear = (other_rows ^ unknown_by_row[ii]) & unknown_by_row[ii]
-                    if bits_to_clear:
-                        if verbose:
-                            print('Found some rows (block_i=%d, block_j=%d, ii=%d): %s' % (
-                                block_i, block_j, ii, bit_to_options(bits_to_clear)))
-                        # For each other column (outside this block)
-                        for j in range(0, 9):
-                            if j // 3 == block_j: continue
-                            if count_bits(self.bitmap[3 * block_i + ii, j]) != 1:
-                                self.bitmap[3 * block_i + ii, j] &= ~bits_to_clear
-                                if count_bits(self.bitmap[3 * block_i + ii, j]) == 1:
-                                    self.propagate_updates([(3 * block_i + ii, j)])
-
-                for jj in range(0, 3):
-                    other_cols = 0
-                    for k in range(0, 3):
-                        if k == jj: continue
-                        other_cols |= unknown_by_col[k]
-                    bits_to_clear = (other_cols ^ unknown_by_col[jj]) & unknown_by_col[jj]
-                    if bits_to_clear:
-                        if verbose:
-                            print('Found some cols (block_i=%d, block_j=%d, jj=%d): %s' % (block_i, block_j, jj, bit_to_options(bits_to_clear)))
-                        # For each row column (outside this block)
-                        for i in range(0, 9):
-                            if i // 3 == block_i: continue
-                            if count_bits(self.bitmap[i, 3 * block_j + jj]) != 1:
-                                self.bitmap[i, 3 * block_j + jj] &= ~bits_to_clear
-                                if count_bits(self.bitmap[i, 3 * block_j + jj]) == 1:
-                                    self.propagate_updates([(i, 3 * block_j + jj)])
-
+                for i, j in block_iterator(3 * block_i, 3 * block_j):
+                    if count_bits(self.bitmap[i, j]) != 1:
+                        unknown_by_row[i % 3] |= self.bitmap[i, j]
+                        unknown_by_col[j % 3] |= self.bitmap[i, j]
+                its = {
+                    "row": (0, unknown_by_row, row_iterator),
+                    "col": (1, unknown_by_col, col_iterator),
+                }
+                for it_name, it_data in its.items():
+                    index, unknown_by_line, it = it_data[0], it_data[1], it_data[2]
+                    for k1 in range(0, 3):
+                        other_lines = unknown_by_line[(k1 + 1) % 3] | unknown_by_line[(k1 + 2) % 3]
+                        bits_to_clear = (other_lines ^ unknown_by_line[k1]) & unknown_by_line[k1]
+                        if bits_to_clear:
+                            if verbose:
+                                print('Found some %s (block_i=%d, block_j=%d, k1=%d): %s' % (
+                                    it_name, block_i, block_j, k1, bit_to_options(bits_to_clear)))
+                            # For each other column (outside this block)
+                            block = [block_i, block_j]
+                            for ij in it(3 * block[0] + k1, 3 * block[1] + k1):
+                                if ij[1 - index] // 3 == block[1 - index]: continue
+                                if count_bits(self.bitmap[ij[0], ij[1]]) != 1:
+                                    self.bitmap[ij[0], ij[1]] &= ~bits_to_clear
+                                    if count_bits(self.bitmap[ij[0], ij[1]]) == 1:
+                                        self.propagate_updates([ij])
         return False
 
     def union_n(self, n):
@@ -282,12 +252,6 @@ class Puzzle:
                             self.bitmap[i, j] &= ~union_bits
                             if count_bits(self.bitmap[i, j]) == 1:
                                 self.propagate_updates([(i, j)])
-
-    def union_2(self):
-        return self.union_n(2)
-
-    def union_3(self):
-        return self.union_n(3)
 
     def only_place(self):
         for i, j in grid_iterator():
@@ -323,22 +287,23 @@ class Puzzle:
                             if self.progress() == 0 and self.check_state():
                                 print('in search, solved: %d' % num_attempts)
                                 return
-#                            elif (self.progress() > 0 and self.check_state()):
-#                                print(self.solve_linear())
+                            elif False and (self.progress() > 0 and self.check_state()):
+                                print(solve_linear(self))
 
 
     def solve(self, max_level):
         self.first_pass()
         print(puzzle)
 
-        last_progress = 10000
+        last_progress = 9**3
         moves = [
             ("only_place", 1, lambda x: x.only_place()),
             ("blockwise", 2, lambda x: x.blockwise()),
             ("blockwise_rows", 2, lambda x: x.blockwise_rows()),
             ("blockwise_cols", 2, lambda x: x.blockwise_cols()),
-            ("union_2", 3, lambda x: x.union_2()),
-            ("union_3", 4, lambda x: x.union_3()),
+            ("union_2", 3, lambda x: x.union_n(2)),
+            ("union_3", 4, lambda x: x.union_n(3)),
+            ("union_4", 5, lambda x: x.union_n(4)), # Never found a puzzle that needed this
         ]
         while self.progress() != last_progress:
             last_progress = self.progress()
@@ -356,7 +321,6 @@ class Puzzle:
         return self.progress() == 0
 
 
-
 def read_puzzle(filename):
     with open(filename, 'r') as f:
         lines = f.readlines()
@@ -365,10 +329,20 @@ def read_puzzle(filename):
     return Puzzle(state)
 
 
-puzzle = read_puzzle(sys.argv[1])
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Solve s.')
+    parser.add_argument('--max_level', type=int, default=5,
+                        help='Max level (complexity of moves)')
+    parser.add_argument('--puzzle', help='Filename of the puzzle')
+    parser.add_argument('--allow_search', type=int, help='Allow performing search', default=0)
+    args = parser.parse_args(sys.argv[1:])
+    puzzle = read_puzzle(args.puzzle)
 
-puzzle.solve(4)
-print(puzzle)
-if puzzle.progress() != 0:
-    puzzle.search(4)
+    puzzle.solve(args.max_level)
     print(puzzle)
+    if args.allow_search and (puzzle.progress() != 0):
+        puzzle.search(args.max_level)
+        print(puzzle)
+    if puzzle.progress() == 0:
+        sys.exit(0)
+    sys.exit(1)
