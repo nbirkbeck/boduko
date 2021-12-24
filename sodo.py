@@ -64,12 +64,25 @@ def col_iterator(i, j):
     for ii in range(0, 9):
         yield ii, j
 
+def grid_iterator():
+    for i in range(0, 9):
+        for j in range(0, 9):
+            yield i, j
+
 def block_iterator(i, j):
-    block_i = i // 3
-    block_j = j // 3
+    block_i, block_j = i // 3, j // 3
     for k in range(0, 9):
         yield 3 * block_i + k // 3, 3 * block_j + k % 3
 
+def concat_iterators(its):
+    for it in its:
+        for i, j in it:
+            yield i, j
+
+def all_iterators(i, j):
+    return concat_iterators([row_iterator(i, j),
+                             col_iterator(i, j),
+                             block_iterator(i, j)])
 
 class Puzzle:
     def __init__(self, state):
@@ -85,78 +98,43 @@ class Puzzle:
         return 'num_unknown = %d, valid = %d, progress = %d\n' % (self.num_unknown(), self.check_state(), self.progress()) + s + '\n' + options_str
 
     def num_unknown(self):
-        count = 0
-        for i in range(0, 9):
-            for j in range(0, 9):
-                if count_bits(self.bitmap[i, j]) != 1:
-                    count += 1
-        return count
+        return sum([count_bits(self.bitmap[i, j]) != 1
+                    for i, j in grid_iterator()], 0)
 
     def progress(self):
-        num_bits = 0
-        for i in range(0, 9):
-            for j in range(0, 9):
-                num_bits += count_bits(self.bitmap[i, j])
-
-        return num_bits - 9 * 9
-
+        return sum([count_bits(self.bitmap[i, j])
+                    for i, j in grid_iterator()], -81)
 
     def update_entry(self, i, j):
-        if self.bitmap[i, j] == 0:
-            bits = 0x1FF
-        else:
-            bits = self.bitmap[i, j]
-        block_i = i // 3
-        block_j = j // 3
-        for ii in range(0, 9):
-            if count_bits(self.bitmap[i, ii]) == 1:
-                bits &= ~self.bitmap[i, ii]
-            if count_bits(self.bitmap[ii, j]) == 1:
-                bits &= ~self.bitmap[ii, j]
-            if count_bits(self.bitmap[3 * block_i + ii // 3, 3 * block_j + ii % 3]) == 1:
-                bits &= ~self.bitmap[3 * block_i + ii // 3, 3 * block_j + ii % 3]
-
+        bits = 0x1ff if (self.bitmap[i, j] == 0) else self.bitmap[i, j]
+        for ii,jj in all_iterators(i, j):
+            if count_bits(self.bitmap[ii, jj]) == 1:
+                bits &= ~self.bitmap[ii, jj]
         self.bitmap[i, j] = bits
 
     def check_state(self, verbose=False):
         invalid = False
         messages = []
         for i in range(0, 9):
-            bits = 0
-            for j in range(0, 9):
-                bits |= self.bitmap[i, j]
-            if count_bits(bits) != 9:
-                messages.append('Invalid row %d' % i)
-                invalid = True
-
-            bits = 0
-            for j in range(0, 9):
-                bits |= self.bitmap[j, i]
-            if count_bits(bits) != 9:
-                messages.append('Invalid col %d' % i)
-                invalid = True
-
-            block_i = i // 3
-            block_j = i % 3
-
-            bits = 0
-            for j in range(0, 9):
-                bits |= self.bitmap[3 * block_i + j // 3, 3 * block_j + j % 3]
-            if count_bits(bits) != 9:
-                messages.append('Invalid block %d, %d' % (block_i, block_j))
-                invalid = True
-        if verbose:
-            print(messages)
-        return not invalid
+            its = {"row": row_iterator(i, 0),
+                   "col": col_iterator(0, i),
+                   "block": block_iterator(3 * (i // 3), 3  * (i % 3))}
+            for it_name, it in its.items():
+                bits = 0
+                for ii, jj in it:
+                    bits |= self.bitmap[ii, jj]
+                if count_bits(bits) != 9:
+                    messages.append('Invalid %s %d' % (it_name, i))
+        if verbose: print(messages)
+        return len(messages) == 0
 
     def first_pass(self):
         found = []
-        for i in range(0, 9):
-            for j in range(0, 9):
-                if self.bitmap[i, j] == 0:
-                    self.update_entry(i, j)
-                    if count_bits(self.bitmap[i, j]) == 1:
-                        found.append((i, j))
+        for i, j in grid_iterator():
+            if self.bitmap[i, j] == 0:
+                self.update_entry(i, j)
+                if count_bits(self.bitmap[i, j]) == 1:
+                    found.append((i, j))
         self.propagate_updates(found)
 
     def propagate_updates(self, found):
@@ -166,20 +144,7 @@ class Puzzle:
                 if count_bits(self.bitmap[entry[0], entry[1]]) != 1:
                     continue
                 bits = self.bitmap[entry[0], entry[1]]
-                to_check = []
-                for i in range(0, 9):
-                    to_check.append((i, entry[1]))
-                for j in range(0, 9):
-                    to_check.append((entry[0], j))
-                block_i = entry[0] // 3
-                block_j = entry[1] // 3
-                for ii in range(0, 3):
-                    for jj in range(0, 3):
-                        i = 3 * block_i + ii
-                        j = 3 * block_j + jj
-                        to_check.append((i, j))
-
-                for ij in to_check:
+                for ij in all_iterators(entry[0], entry[1]):
                     if ij[0] == entry[0] and ij[1] == entry[1]: continue
                     if count_bits(self.bitmap[ij[0], ij[1]]) == 1: continue
                     self.bitmap[ij[0], ij[1]] &= ~bits
@@ -383,45 +348,19 @@ class Puzzle:
                                     self.propagate_updates([(i, j)])
 
     def only_place(self):
-        for i in range(0, 9):
-            for j in range(0, 9):
-                if count_bits(self.bitmap[i, j]) == 1: continue
-                iterators = [row_iterator, col_iterator, block_iterator]
-                # Check row
+        for i, j in grid_iterator():
+            if count_bits(self.bitmap[i, j]) == 1: continue
+            iterators = [row_iterator, col_iterator, block_iterator]
+            for it in iterators:
                 other = 0
-                for jj in range(0, 9):
-                    if jj != j: other |= self.bitmap[i, jj]
-                sel = (other ^ self.bitmap[i, j]) & self.bitmap[i, j]
-                if count_bits(sel) == 1:
-                    self.bitmap[i, j] = sel
-                    self.propagate_updates([(i, j)])
-                    continue
-
-                # Check col
-                other = 0
-                for ii in range(0, 9):
-                    if ii != i: other |= self.bitmap[ii, j]
-                sel = (other ^ self.bitmap[i, j]) & self.bitmap[i, j]
-                if count_bits(sel) == 1:
-                    self.bitmap[i, j] = sel
-                    self.propagate_updates([(i, j)])
-                    continue
-
-
-                # Check block
-                block_i = i // 3
-                block_j = j // 3
-                other = 0
-                for k in range(0, 9):
-                    ii = 3 * block_i + (k // 3)
-                    jj = 3 * block_j + (k % 3)
+                for ii, jj in it(i, j):
                     if ii == i and jj == j: continue
-                    other |= self.bitmap[ii, jj]
-
+                    other |= self.bitmap[i, jj]
                 sel = (other ^ self.bitmap[i, j]) & self.bitmap[i, j]
                 if count_bits(sel) == 1:
                     self.bitmap[i, j] = sel
                     self.propagate_updates([(i, j)])
+                    break
 
     def solve_linear(self):
         import numpy.linalg
@@ -515,6 +454,8 @@ class Puzzle:
 
     def solve(self, max_level):
         self.first_pass()
+        print(puzzle)
+
         last_progress = 10000
         moves = [
             ("only_place", 1, lambda x: x.only_place()),
@@ -550,6 +491,7 @@ def read_puzzle(filename):
 
 
 puzzle = read_puzzle(sys.argv[1])
+
 puzzle.solve(4)
 print(puzzle)
 if puzzle.progress() != 0:
